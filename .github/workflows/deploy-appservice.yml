@@ -1,0 +1,91 @@
+name: Deploy Infra (Bicep) to Azure
+
+on:
+  workflow_dispatch:
+    inputs:
+      rg_name:
+        description: 'Azure Resource Group name'
+        required: true
+        type: string
+      location:
+        description: 'Azure location/region (e.g., eastus)'
+        required: true
+        type: string
+        default: 'eastus'
+      app_name:
+        description: 'Azure Web App name (globally unique)'
+        required: true
+        type: string
+      sku_name:
+        description: 'App Service Plan SKU (e.g., B1, S1)'
+        required: false
+        type: string
+        default: 'B1'
+      slot_name:
+        description: 'Optional deployment slot name (e.g., staging)'
+        required: false
+        type: string
+      enable_ai:
+        description: 'Enable Application Insights'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  # Azure OIDC credentials
+  AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # Deployment inputs (can also be set as repo Variables)
+  RG_NAME: ${{ inputs.rg_name || vars.RG_NAME }}
+  LOCATION: ${{ inputs.location || vars.LOCATION || 'eastus' }}
+  APP_NAME: ${{ inputs.app_name || vars.APP_NAME }}
+  SKU_NAME: ${{ inputs.sku_name || vars.SKU_NAME || 'B1' }}
+  SLOT_NAME: ${{ inputs.slot_name || vars.SLOT_NAME || '' }}
+  ENABLE_AI: ${{ inputs.enable_ai || vars.ENABLE_AI || 'true' }}
+
+jobs:
+  deploy-infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          auth-type: SERVICE_PRINCIPAL
+          creds: ${{ env.AZURE_CREDENTIALS }}
+
+      - name: Create RG and deploy Bicep
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Using RG=$RG_NAME LOCATION=$LOCATION APP_NAME=$APP_NAME SKU=$SKU_NAME SLOT=$SLOT_NAME ENABLE_AI=$ENABLE_AI"
+          if [[ -z "${RG_NAME}" || -z "${LOCATION}" || -z "${APP_NAME}" ]]; then
+            echo "Missing required inputs: RG_NAME, LOCATION, APP_NAME" >&2
+            exit 1
+          fi
+          az group create -n "$RG_NAME" -l "$LOCATION"
+          PARAMS=(
+            appName=$APP_NAME
+            skuName=$SKU_NAME
+            appInsightsLocation=$LOCATION
+            enableApplicationInsights=$ENABLE_AI
+          )
+          if [[ -n "$SLOT_NAME" ]]; then
+            PARAMS+=(slotName=$SLOT_NAME)
+          fi
+          az deployment group create \
+            --resource-group "$RG_NAME" \
+            --template-file infra/main.bicep \
+            --parameters "${PARAMS[@]}"
+
+      - name: Show deployment outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOY_NAME=$(az deployment group list -g "$RG_NAME" --query "[?contains(name, 'main')].name | [-1]" -o tsv || true)
+          if [[ -n "$DEPLOY_NAME" ]]; then
+            az deployment group show -g "$RG_NAME" -n "$DEPLOY_NAME" --query properties.outputs
+          else
+            echo "No deployment name found; skipping outputs lookup."
+          fi
