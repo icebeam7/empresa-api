@@ -1,0 +1,107 @@
+name: Deploy App to Azure App Service
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'EmpresaApi/**'
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'Azure Web App name'
+        required: true
+        type: string
+      slot_name:
+        description: 'Optional deployment slot name (leave empty for production)'
+        required: false
+        type: string
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  # Azure OIDC credentials
+  AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+  
+  # Deployment inputs (can also be set as repo Variables)
+  APP_NAME: ${{ inputs.app_name || vars.APP_NAME }}
+  SLOT_NAME: ${{ inputs.slot_name || vars.SLOT_NAME || '' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      
+      - name: Restore dependencies
+        run: dotnet restore EmpresaApi/EmpresaApi.csproj
+      
+      - name: Build
+        run: dotnet build EmpresaApi/EmpresaApi.csproj -c Release --no-restore
+      
+      - name: Publish
+        run: dotnet publish EmpresaApi/EmpresaApi.csproj -c Release -o ./publish /p:UseAppHost=false
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-package
+          path: ./publish
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-package
+          path: ./publish
+      
+      - name: Iniciar sesion en Azure
+        uses: azure/login@v2
+        with:
+          auth-type: SERVICE_PRINCIPAL
+          creds: ${{ secrets.AZURE_CREDENTIALS }}      
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [[ -z "$APP_NAME" ]]; then
+            echo "Error: APP_NAME is required. Set it as workflow input or repo variable." >&2
+            exit 1
+          fi
+          echo "Deploying to App Service: $APP_NAME"
+          if [[ -n "$SLOT_NAME" ]]; then
+            echo "Target slot: $SLOT_NAME"
+          else
+            echo "Target: Production slot"
+          fi
+      
+      - name: Deploy to App Service (production)
+        if: ${{ env.SLOT_NAME == '' }}
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.APP_NAME }}
+          package: ./publish
+      
+      - name: Deploy to App Service slot
+        if: ${{ env.SLOT_NAME != '' }}
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.APP_NAME }}
+          slot-name: ${{ env.SLOT_NAME }}
+          package: ./publish
+      
+      - name: Show deployment URL
+        shell: bash
+        run: |
+          if [[ -n "$SLOT_NAME" ]]; then
+            URL="https://$APP_NAME-$SLOT_NAME.azurewebsites.net"
+          else
+            URL="https://$APP_NAME.azurewebsites.net"
+          fi
+          echo "App deployed to: $URL"
