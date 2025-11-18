@@ -11,7 +11,7 @@ builder.Services.AddSwaggerGen();
 // EF Core + SQLite
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
-	options.UseSqlite(connectionString));
+    options.UseSqlite(connectionString));
 
 var app = builder.Build();
 
